@@ -1,6 +1,62 @@
 This document keeps a record of all changes to Moonraker's remote
 facing APIs.
 
+### November 12th 2020
+- Two new fields have been added to the gcode metadata:
+  - `gcode_start_byte`:  Indicates the byte position in the
+    file where the first "Gxx" or "Mxx" command is detected.
+  - `gcode_end_byte`:  Indicates the byte position in the
+    file where the last "Gxx" or "Mxx" command is detected.
+  These fields may be used to more accurately predict print
+  progress based on the file size.
+
+### November 11th 2020
+- The `server.websocket.id` API has been added.  This returns a
+  unique ID that Moonraker uses to track each client connection.
+  As such, this API is only available over the websocket, there
+  is no complementary HTTP request.
+- All HTTP API request may now include arguments in either the
+  query string or in the request's body.
+- Subscriptions are now managed on a per connection basis.  Each
+  connection will only recieve updates for objects in which they
+  are currently subscribed.  If an "empty" request is sent, the
+  subscription will be cancelled.
+- The `POST /printer/object/subscribe` now requires a
+  `connection_id` argument.  This is used to identify which
+  connection's associated subscription should be updated.
+  Currenlty subscriptions are only supported over the a
+  websocket connection, one may use the id received from
+  `server.websocket.id`.
+- The `notify_klippy_ready` websocket notification has been
+  added.
+
+### November 2nd 2020
+- The `GET /server/files/directory` endpoint now accepts a new
+  optional argument, `extended`.  If `extended=true`, then
+  the data returned for gcode files will also include extracted
+  metadata if it exists.
+
+### October 25th 2020
+- The `modified` field reported for files and directories is no
+  longer represented as a string.  It is now a floating point
+  value representing unix time (in seconds).  This can be used
+  to display the "last modified date" based on the client's
+  timezone.
+
+### October 21st 2020
+- The `/server/gcode_store` endpoint no longer returns a string
+  in the result's `gcode_store` field.  It now returns an
+  Array of objects, each object containing `message` and `time`
+  fields.  The time refers to a timestamp in unix time (seconds),
+  and may be used to determine when the gcode store received the
+  accompanying `message`.
+
+### September 30th 2020
+- Two new endpoints have been added:
+  - `GET /server/info` (`server.info`)
+  - `GET /server/gcode_store` (`server.gcode_store`)
+  See web_api.md for details on their usage.
+
 ### September 7th 2020
 - A new websocket API has been added, `server.files.delete_file`:
   ```

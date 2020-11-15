@@ -24,6 +24,8 @@ class PrinterPower:
         self.server.register_endpoint(
             "/machine/gpio_power/off", ['POST'],
             self._handle_power_request)
+        self.server.register_remote_method(
+            "set_device_power", self.set_device_power)
 
         self.current_dev = None
         self.devices = {}
@@ -32,68 +34,85 @@ class PrinterPower:
         logging.info("Power plugin loading devices: " + str(dev_names))
         devices = {}
         for dev in dev_names:
-            pin = config.getint(dev + "_pin")
-            name = config.get(dev + "_name", dev)
-            active_low = config.getboolean(dev + "_active_low", False)
-            devices[dev] = {
-                "name": name,
-                "pin": pin,
-                "active_low": int(active_low),
-                "status": None
-            }
+            devices[dev] = GpioDevice(dev, config)
         ioloop = IOLoop.current()
         ioloop.spawn_callback(self.initialize_devices, devices)
 
-    async def _handle_list_devices(self, path, method, args):
+    async def _handle_list_devices(self, web_request):
         output = {"devices": []}
         for dev in self.devices:
             output['devices'].append({
-                "name": self.devices[dev]["name"],
+                "name": self.devices[dev].name,
                 "id": dev
             })
         return output
 
-    async def _handle_power_request(self, path, method, args):
+    async def _handle_power_request(self, web_request):
+        args = web_request.get_args()
+        ep = web_request.get_endpoint()
         if len(args) == 0:
-            if path == "/machine/gpio_power/status":
+            if ep == "/machine/gpio_power/status":
                 args = self.devices
             else:
                 return "no_devices"
 
         result = {}
+        req = ep.split("/")[-1]
         for dev in args:
-            if dev not in self.devices:
-                result[dev] = "device_not_found"
-                continue
-
-            await GPIO.verify_pin(self.devices[dev]["pin"],
-                                  self.devices[dev]["active_low"])
-            if path == "/machine/gpio_power/on":
-                GPIO.set_pin_value(self.devices[dev]["pin"], 1)
-            elif path == "/machine/gpio_power/off":
-                GPIO.set_pin_value(self.devices[dev]["pin"], 0)
-            elif path != "/machine/gpio_power/status":
+            if req not in ("on", "off", "status"):
                 raise self.server.error("Unsupported power request")
-
-            self.devices[dev]["status"] = GPIO.is_pin_on(
-                self.devices[dev]["pin"])
-
-            result[dev] = self.devices[dev]["status"]
+            if (await self._power_dev(dev, req)):
+                result[dev] = self.devices[dev].status
+            else:
+                result[dev] = "device_not_found"
         return result
+
+    async def _power_dev(self, dev, req):
+        if dev not in self.devices:
+            return False
+
+        if req in ["on", "off"]:
+            await self.devices[dev].power(req)
+
+            self.server.send_event("gpio_power:power_changed", {
+                "device": dev,
+                "status": req
+            })
+        elif req != "status":
+            raise self.server.error("Unsupported power request")
+
+        await self.devices[dev].refresh_status()
+        return True
 
     async def initialize_devices(self, devices):
         for name, device in devices.items():
             try:
-                logging.debug(
-                    f"Attempting to configure pin GPIO{device['pin']}")
-                await GPIO.setup_pin(device["pin"], device["active_low"])
-                device["status"] = GPIO.is_pin_on(device["pin"])
+                await device.initialize()
             except Exception:
                 logging.exception(
                     f"Power plugin: ERR Problem configuring the output pin for"
                     f" device {name}. Removing device")
                 continue
             self.devices[name] = device
+
+    def set_device_power(self, device, state):
+        status = None
+        if isinstance(state, bool):
+            status = "on" if state else "off"
+        elif isinstance(state, str):
+            status = state.lower()
+            if status in ["true", "false"]:
+                status = "on" if status == "true" else "off"
+        if status not in ["on", "off"]:
+            logging.info(f"Invalid state received: {state}")
+            return
+        ioloop = IOLoop.current()
+        ioloop.spawn_callback(self._power_dev, device, status)
+
+    async def add_device(self, dev, device):
+        await device.initialize()
+        self.devices[dev] = device
+
 
 class GPIO:
     gpio_root = "/sys/class/gpio"
@@ -159,7 +178,6 @@ class GPIO:
         if GPIO._get_gpio_option(pin, "direction").strip() != "out":
             GPIO._set_gpio_option(pin, "direction", "out")
 
-
     @staticmethod
     def is_pin_on(pin):
         return "on" if int(GPIO._get_gpio_option(pin, "value")) else "off"
@@ -168,6 +186,26 @@ class GPIO:
     def set_pin_value(pin, active):
         value = 1 if (active == 1) else 0
         GPIO._set_gpio_option(pin, "value", value)
+
+
+class GpioDevice:
+    def __init__(self, dev, config):
+        self.name = config.get(dev + "_name", dev)
+        self.status = None
+        self.pin = config.getint(dev + "_pin")
+        self.active_low = int(config.getboolean(dev + "_active_low", False))
+
+    async def initialize(self):
+        logging.debug(f"Attempting to configure pin GPIO{self.pin}")
+        await GPIO.setup_pin(self.pin, self.active_low)
+        await self.refresh_status()
+
+    async def refresh_status(self):
+        self.status = GPIO.is_pin_on(self.pin)
+
+    async def power(self, status):
+        await GPIO.verify_pin(self.pin, self.active_low)
+        GPIO.set_pin_value(self.pin, int(status == "on"))
 
 
 def load_plugin(config):

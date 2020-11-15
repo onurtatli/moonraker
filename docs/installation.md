@@ -162,9 +162,6 @@ klippy_uds_address: /tmp/klippy_uds
 #   is /tmp/klippy_uds
 max_upload_size: 200
 #   The maximum size allowed for a file upload.  Default is 200 MiB.
-enable_cors: False
-#   Enables CORS for all http requests.  This option is useful for web
-#   application development.  Default is False.
 enable_debug_logging: True
 #   When set to True Moonraker will log in verbose mode.  During this stage
 #   of development the default is True.  In the future this will change.
@@ -179,7 +176,7 @@ config_path:
 enabled: True
 #   Enables authorization.  When set to true, requests must either contain
 #   a valid API key or originate from a trusted client. Default is True.
-api_key_path: ~/.moonraker_api_key
+api_key_file: ~/.moonraker_api_key
 #   Path of the file that stores Moonraker's API key.  The default is
 #   ~/.moonraker_api_key
 trusted_clients:
@@ -193,6 +190,11 @@ trusted_clients:
 #   192.168.1.254.  Note that when specifying IPv4 ranges the last segment
 #   of the ip address must be 0. The default is no clients or ranges are
 #   trusted.
+cors_domains:
+  http://klipper-printer.local
+  http://second-printer.local:7125
+#   Enables CORS for the specified domains.  One may specify * if they wish
+#   to allow all domains.
 ```
 
 For the moment, you need to restart the moonraker service to load a new
@@ -240,17 +242,14 @@ in the PanelDue's "macro" menu.
 Note that buzzing the piezo requires the following gcode_macro in `printer.cfg`:
 ```
 [gcode_macro PANELDUE_BEEP]
-variable_sequence: 0
-variable_frequency: 0
-variable_duration: 0
 # Beep frequency
 default_parameter_FREQUENCY: 300
 # Beep duration in seconds
 default_parameter_DURATION: 1.
 gcode:
-  SET_GCODE_VARIABLE MACRO=PANELDUE_BEEP VARIABLE=frequency VALUE={FREQUENCY|int}
-  SET_GCODE_VARIABLE MACRO=PANELDUE_BEEP VARIABLE=duration VALUE={DURATION|float}
-  SET_GCODE_VARIABLE MACRO=PANELDUE_BEEP VARIABLE=sequence VALUE={printer["gcode_macro PANELDUE_BEEP"].sequence|int + 1}
+  {action_call_remote_method("paneldue_beep",
+                             frequency=FREQUENCY|int,
+                             duration=DURATION|float)}
 ```
 
 #### Power Control Plugin
@@ -282,5 +281,32 @@ that you listed under devices.
 
 Each device can have a Friendly Name, pin, and activehigh set. Pin is the only
 required option. For devices that should be active when the signal is 0 or low,
-set {dev}_activehigh to False, otherwise don't put the option in the
+set {dev}_active_low to False, otherwise don't put the option in the
 configuration.
+
+It is possible to toggle device power from the Klippy host, this can be done
+with a gcode_macro, such as:
+```
+[gcode_macro POWER_OFF_PRINTER]
+gcode:
+  {action_call_remote_method("set_device_power",
+                             device="printer",
+                             state="off")}
+```
+The `POWER_OFF_PRINTER` gcode can be run to turn off the "printer" device.
+This could be used in conjunction with Klipper's idle timeout to turn the
+printer off when idle with a configuration similar to that of below:
+```
+[delayed_gcode delayed_printer_off]
+initial_duration: 0.
+gcode:
+  {% if printer.idle_timeout.state == "Idle" %}
+    POWER_OFF_PRINTER
+  {% endif %}
+
+[idle_timeout]
+gcode:
+  TURN_OFF_MOTORS
+  TURN_OFF_HEATERS
+  UPDATE_DELAYED_GCODE ID=delayed_printer_off DURATION=60
+```

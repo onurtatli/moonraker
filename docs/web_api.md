@@ -11,8 +11,9 @@ of:
 
 `{result: <response data>}`
 
-The command matches the original command request, the result is the return
-value generated from the request.
+Arguments sent via the HTTP APIs may either be included in the query string
+or as part of the request's body.  All of the examples in this document
+use the query string for arguments.
 
 Websocket requests are returned in JSON-RPC format:
 `{jsonrpc: "2.0", "result": <response data>, id: <request id>}`
@@ -88,7 +89,7 @@ that uses promises to return responses and errors (see json-rcp.js).
 
 ## Printer Status
 
-### Request available printer objects and their attributes:
+### List available printer objects:
 - HTTP command:\
   `GET /printer/objects/list`
 
@@ -103,7 +104,7 @@ that uses promises to return responses and errors (see json-rcp.js).
   { objects: ["gcode", "toolhead", "bed_mesh", "configfile",....]}
   ```
 
-### Query the a status for an object, or group of objects:
+### Query printer object status:
 - HTTP command:\
   `GET /printer/objects/query?gcode`
 
@@ -114,7 +115,7 @@ that uses promises to return responses and errors (see json-rcp.js).
 
 - Websocket command:\
   `{jsonrpc: "2.0", method: "printer.objects.query", params:
-    {objects: {gcode: [], toolhead: ["position", "status"]}},
+    {objects: {gcode: null, toolhead: ["position", "status"]}},
      id: <request id>}`
 
   Note that an empty array will fetch all available attributes for its key.
@@ -138,17 +139,30 @@ that uses promises to return responses and errors (see json-rcp.js).
       ...}
     }
   ```
-### Subscribe to a status request or a batch of status requests:
+See [printer_objects.md](printer_objects.md) for details on the printer objects
+available for query.
+
+### Subscribe to printer object status:
 - HTTP command:\
-  `POST /printer/objects/subscribe?gcode=gcode_position,bus&extruder=target`
+  `POST /printer/objects/subscribe?connection_id=123456789&
+   gcode=gcode_position,bus&extruder=target`
+
+   Note:  The HTTP API requires that a `connection_id` is passed via the query
+   string or as part of the form.   This should be the
+   [ID reported](#get-websocket-id) from a currently connected websocket. A
+   request that includes only the `connection_id` argument will cancel the
+   subscription on the specified websocket.
 
 - Websocket command:\
   `{jsonrpc: "2.0", method: "printer.objects.subscribe", params:
-    {objects: {gcode: [], toolhead: ["position", "status"]}},
+    {objects: {gcode: null, toolhead: ["position", "status"]}},
     id: <request id>}`
 
+    Note that if `objects` is an empty object then the subscription will
+    be cancelled.
+
 - Returns:\
-  Status data for all currently subscribed objects, with the format matching that of
+  Status data for objects in the request, with the format matching that of
   the `/printer/objects/query`:
 
   ```json
@@ -166,13 +180,11 @@ that uses promises to return responses and errors (see json-rcp.js).
       ...}
     }
   ```
-  Note that Moonraker's current behavior is maintain a superset of all client
-  subscriptions, thus you may received data for objects that you did not
-  request.  This behavior is subject to change in the future (where each
-  client receives only the subscriptions it requested).
+See [printer_objects.md](printer_objects.md) for details on the printer objects
+available for subscription.
 
-  Future updates for subscribed objects are sent asynchronously over the
-  websocket.  See the `notify_status_update` notification for details.
+Status updates for subscribed objects are sent asynchronously over the
+websocket.  See the `notify_status_update` notification for details.
 
 ### Query Endstops
 - HTTP command:\
@@ -192,6 +204,29 @@ that uses promises to return responses and errors (see json-rcp.js).
    z: "open"}
 ```
 
+### Query Server Info
+- HTTP command:\
+  `GET /server/info`
+
+- Websocket command:
+  `{jsonrpc: "2.0", method: "server.info", id: <request id>}`
+
+- Returns:\
+  An object containing the server's state, structured as follows:
+
+```json
+  {
+    klippy_connected: <bool>,
+    klippy_state: <string>,
+    plugins: [<strings>]
+  }
+```
+  Note that `klippy_state` will match the `state` value received from
+  `/printer/info`. The `klippy_connected` item tracks the state of the
+  connection to Klippy. The `plugins` key will return a list of all
+  enabled plugins.  This can be used by clients to check if an optional
+  plugin is available.
+
 ### Fetch stored temperature data
 - HTTP command:\
   `GET /server/temperature_store`
@@ -205,6 +240,78 @@ that uses promises to return responses and errors (see json-rcp.js).
   1 second by default, containing a total of 1200 values (20 minutes).  The
   array is organized from oldest temperature to most recent (left to right).
   Note that when the host starts each array is initialized to 0s.
+
+### Fetch stored gcode info
+- HTTP command:\
+  `GET /server/gcode_store`
+
+  Optionally, a `count` argument may be added to specify the number of
+  responses to fetch. If omitted, the entire gcode store will be sent
+  (up to 1000 responses).
+
+  `GET /server/gcode_store?count=100`
+
+- Websocket command:
+  `{jsonrpc: "2.0", method: "server.gcode_store", id: <request id>}`
+
+  OR
+  `{jsonrpc: "2.0", method: "server.gcode_store",
+   params: {count: <integer>} id: <request id>}`
+
+- Returns:\
+  An object with the field `gcode_store` that contains an array
+  of objects.  Each object will contain a `message` field and a
+  `time` field:
+```json
+  {
+    gcode_store: [
+      {
+        message: <string>,
+        time: unix_time_stamp
+      }, ...
+    ]
+  }
+```
+Each `message` field contains a gcode response received at the time
+indicated in the `time` field. Note that the time stamp refers to
+unix time (in seconds).  This can be used to create a JavaScript
+`Date` object:
+```javascript
+for (let resp of result.gcode_store) {
+  let date = new Date(resp.time * 1000);
+  // Do something with date and resp.message ...
+}
+```
+
+### Restart Server
+- HTTP command:\
+  `POST /server/restart`
+
+- Websocket command:
+  `{jsonrpc: "2.0", method: "server.restart", id: <request id>}`
+
+- Returns:\
+  `"ok"` upon receipt of the restart request.  After the request
+  is returns, the server will restart.  Any existing connection
+  will be disconnected.  A restart will result in the creation
+  of a new server instance where the configuration is reloaded.
+
+## Get Websocket ID
+- HTTP command:\
+  Not Available
+
+- Websocket command:
+  `{jsonrpc: "2.0", method: "server.websocket.id", id: <request id>}`
+
+- Returns:\
+  This connected websocket's unique identifer in the format shown below.
+  Note that this API call is only available over the websocket.
+
+```json
+  {
+    websocket_id: <int>
+  }
+```
 
 ## Gcode Controls
 
@@ -344,8 +451,8 @@ path relative to the specified "root".  Note that if the query st
 ```json
 [
   {filename: "file name",
-   size: <file size>,
-   modified: "last modified date",
+   size: <file_size>,
+   modified: <unix_time>,
    ...]
 ```
 
@@ -372,7 +479,7 @@ path relative to the specified "root".  Note that if the query st
   {
     filename: "file name",
     size: <file_size>,
-    modified: "last modified date",
+    modified: <unix_time>,
     slicer: "Slicer Name",
     slicer_version: "<version>",
     first_layer_height: <mm>,
@@ -380,14 +487,16 @@ path relative to the specified "root".  Note that if the query st
     first_layer_extr_temp: <C>,
     layer_height: <mm>,
     object_height: <mm>,
-    estimated_time: <time in seconds>,
+    estimated_time: <time_in_seconds>,
     filament_total: <mm>,
+    gcode_start_byte: <byte_location_of_first_gcode_command>,
+    gcode_end_byte: <byte_location_of_last_gcode_command>,
     thumbnails: [
       {
-        width: <in pixels>,
-        height: <in pixels>,
-        size: <length of string>,
-        data: <base64 string>
+        width: <in_pixels>,
+        height: <in_pixels>,
+        size: <length_of_string>,
+        data: <base64_string>
       }, ...
     ]
   }
@@ -399,17 +508,22 @@ Unlike `/server/files/list`, this command does not walk through
 subdirectories.
 
 - HTTP command:\
-  `GET /server/files/directory?path=gcodes/my_subdir`
+  `GET /server/files/directory?path=gcodes/my_subdir&extended=true`
 
   If the query string is omitted then the command will return
   the "gcodes" file list by default.
 
 - Websocket command:\
   `{jsonrpc: "2.0", method: "server.files.get_directory",
-   params: {path: "gcodes/my_subdir"} , id: <request id>}`
+   params: {path: "gcodes/my_subdir", extended: true} ,
+   id: <request id>}`
 
   If the "params" are omitted then the command will return
   the "gcodes" file list by default.
+
+The `extended` argument is optional, and defaults to false. If
+specified and set to true, then data returned for gcode files
+will also include metadata if it is available.
 
 - Returns:\
   An object containing file and subdirectory information in the
@@ -420,14 +534,14 @@ subdirectories.
     files: [
       {
         filename: "file name",
-        size: <file size>,
-        modified: "last modified date"
+        size: <file_size>,
+        modified: <unix_time>
       }, ...
     ],
     dirs: [
       {
         dirname: "directory name",
-        modified: "last modified date"
+        modified: <unix_time>
       }
     ]
   }
@@ -704,6 +818,11 @@ Status Subscriptions arrive as a "notify_status_update" notification:
 The structure of the status data is identical to the structure that is
 returned from an object query's "status" attribute.
 
+### Klippy Ready:
+Notify clients when Klippy has reported a ready state
+
+`{jsonrpc: "2.0", method: "notify_klippy_ready"}`
+
 ### Klippy Disconnected:
 Notify clients when Moonraker's connection to Klippy has terminated
 
@@ -787,7 +906,7 @@ Where `metadata` is an object in the following format:
 
 # Appendix
 
-### Websocket setup
+## Websocket setup
 All transmissions over the websocket are done via json using the JSON-RPC 2.0
 protocol.  While the websever expects a json encoded string, one limitation
 of Eventlet's websocket is that it can not send string encoded frames.  Thus
@@ -808,7 +927,7 @@ ws://host:port/websocket?token=<32 character base32 string>
 ```
 
 This is necessary as it isn't currently possible to add `X-Api-Key` to a
-websocket's request header.
+Websocket object's request header.
 
 The following startup sequence is recommened for clients which make use of
 the websocket:
@@ -826,8 +945,121 @@ the websocket:
          get a description of the error from the `state_message` attribute
      - If `state == "shutdown"` then Klippy is in a shutdown state.
      - If `state == "startup"` then re-request printer info in 2s.
-- Repeat step 2s until Klipper reports ready.  T
+- Repeat step 2 until Klipper reports ready.
 - Client's should watch for the `notify_klippy_disconnected` event.  If it reports
   disconnected then Klippy has either been stopped or restarted.  In this
   instance the client should repeat the steps above to determine when
   klippy is ready.
+
+## Basic Print Status
+An advanced client will likely use subscriptions and notifications
+to interact with Moonraker, however simple clients such as home automation
+software and embedded devices (ie: ESP32) may only wish to monitor the
+status of a print.  Below is a high level walkthrough for receiving print state
+via polling.
+
+- Set up a timer to poll at the desired interval.  Depending on your use
+  case, 1 to 2 seconds is recommended.
+- On each cycle, issue the following request:
+  - `GET http://host/printer/objects/query?webhooks&virtual_sdcard&print_stats`\
+    Or via json-rpc:\
+    `{'jsonrpc': "2.0", 'method': "printer.objects.query", 'params':
+    {'objects': {'webhooks': null, 'virtual_sdcard': null,
+    'print_stats': null}}, id: <request id>}`
+- If the request returns an error or the returned `result.status` is an empty
+  object printer objects are not available for query.  Each queried object
+  should be available in `result.status`.  The client should check to make
+  sure that all objects are received before proceeding.
+- Inspect `webhooks.ready`.  If the value is not "ready" the printer
+  is not available.  `webhooks.message` contains a message pertaining
+  to the current state.
+- If the printer is ready, inspect `print_stats.state`.  It may be one
+  of the following values:
+  - "standby": No print in progress
+  - "printing":  The printer is currently printing
+  - "paused":  A print in progress has been paused
+  - "error":  The print exited with an error.  `print_stats.message`
+    contains a related error message
+  - "complete":  The last print has completed
+- If `print_stats.state` is not "standby" then `print_stats.filename`
+  will report the name of the currently loaded file.
+- `print_stats.filename` can be used to fetch file metadata.  It
+  is only necessary to fetch metadata once per print.\
+  `GET http://host/server/files/metadata?filename=<filename>`\
+  Or via json-rpc:\
+  `{jsonrpc: "2.0", method: "server.files.metadata",
+  params: {filename: "filename"}
+  , id: <request id>}`\
+  If metadata extraction failed then this request will return an error.
+  Some metadata fields are only populated for specific slicers, and
+  unsupported slicers will only return the size and modifed date.
+- There are multiple ways to calculate the ETA, this example will use
+  file progress, as it is possible calculate the ETA with or without
+  metadata.
+  - If `metadata.estimated_time` is available, the eta calculation can
+    be done as:
+    ```javascript
+    // assume "result" is the response from the status query
+    let vsd = result.status.virtual_sdcard;
+    let prog_time = vsd.progress * metadata.estimated_time;
+    let eta = metadata.estimated_time - prog_time
+    ```
+    Alternatively, one can simply subtract the print duration from
+    the estimated time:
+    ```javascript
+    // assume "result" is the response from the status query
+    let pstats = result.status.print_status;
+    let eta = metadata.estimated_time - pstats.print_duration;
+    if (eta < 0)
+      eta = 0;
+    ```
+  - If no metadata is available, print duration and progress can be used to
+    calculate the ETA:
+    ```javascript
+    // assume "result" is the response from the status query
+    let vsd = result.status.virtual_sdcard;
+    let pstats = result.status.print_stats;
+    let total_time = pstats.print_duration / vsd.progress;
+    let eta = total_time - pstats.print_duration;
+    ```
+- It is possible to query additional object if a client wishes to display
+  more information (ie: temperatures).  See
+  [printer_objects.md](printer_objects.md) for more information.
+
+## Bed Mesh Coordinates
+The [bed_mesh](printer_objects.md#bed_mesh) printer object may be used
+to generate three dimensional coordinates of a probed area (or mesh).
+Below is an example (in javascript) of how to transform the data received
+from a bed_mesh object query into an array of 3D coordinates.
+```javascript
+// assume that we have executed an object query for bed_mesh and have the
+// result.  This example generates 3D coordinates for the probed matrix,
+// however it would work with the mesh matrix as well
+function process_mesh(result) {
+  let bed_mesh = result.status.bed_mesh
+  let matrix = bed_mesh.probed_matrix;
+  if (!(matrix instanceof Array) ||  matrix.length < 3 ||
+      !(matrix[0] instanceof Array) || matrix[0].length < 3)
+      // make sure that the matrix is valid
+      return;
+  let coordinates = [];
+  let x_distance = (bed_mesh.mesh_max[0] - bed_mesh.mesh_min[0]) /
+    (matrix[0].length - 1);
+  let y_distance = (bed_mesh.mesh_max[1] - bed_mesh.mesh_min[1]) /
+    (matrix.length - 1);
+  let x_idx = 0;
+  let y_idx = 0;
+  for (const x_axis of matrix) {
+    x_idx = 0;
+    let y_coord = bed_mesh.mesh_min[1] + (y_idx * y_distance);
+    for (const z_coord of x_axis) {
+      let x_coord = bed_mesh.mesh_min[0] + (x_idx * x_distance);
+      x_idx++;
+      coordinates.push([x_coord, y_coord, z_coord]);
+    }
+    y_idx++;
+  }
+}
+// Use the array of coordinates visualize the probed area
+// or mesh..
+```
