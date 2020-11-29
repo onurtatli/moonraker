@@ -12,7 +12,7 @@ from tornado import gen
 from tornado.ioloop import IOLoop
 
 class ShellCommand:
-    def __init__(self, cmd, callback=None):
+    def __init__(self, cmd, callback):
         self.io_loop = IOLoop.current()
         self.name = cmd
         self.output_cb = callback
@@ -20,6 +20,7 @@ class ShellCommand:
         self.command = shlex.split(cmd)
         self.partial_output = b""
         self.cancelled = False
+        self.return_code = None
 
     def _process_output(self, fd, events):
         if events & IOLoop.ERROR:
@@ -29,23 +30,22 @@ class ShellCommand:
         except Exception:
             return
         data = self.partial_output + data
-        if b'\n' not in data:
-            self.partial_output = data
-            return
-        elif data[-1] != b'\n':
-            split = data.rfind(b'\n') + 1
-            self.partial_output = data[split:]
-            data = data[:split]
-        try:
-            self.output_cb(data)
-        except Exception:
-            logging.exception("Error writing command output")
+        lines = data.split(b'\n')
+        self.partial_output = lines.pop()
+        for line in lines:
+            try:
+                self.output_cb(line)
+            except Exception:
+                logging.exception("Error writing command output")
 
     def cancel(self):
         self.cancelled = True
 
+    def get_return_code(self):
+        return self.return_code
+
     async def run(self, timeout=2., verbose=True):
-        fd = None
+        self.return_code = fd = None
         if timeout is None:
             # Never timeout
             timeout = 9999999999999999.
@@ -59,7 +59,7 @@ class ShellCommand:
         except Exception:
             logging.exception(
                 f"shell_command: Command ({self.name}) failed")
-            return
+            return False
         if verbose:
             fd = proc.stdout.fileno()
             self.io_loop.add_handler(
@@ -91,10 +91,25 @@ class ShellCommand:
                 msg = f"Command ({self.name}) timed out"
             logging.info(msg)
             self.io_loop.remove_handler(fd)
-        return complete
+        self.return_code = proc.returncode
+        return self.return_code == 0 and complete
+
+    async def run_with_response(self, timeout=2.):
+        result = []
+
+        def cb(data):
+            data = data.strip()
+            if data:
+                result.append(data.decode())
+        prev_cb = self.output_cb
+        self.output_cb = cb
+        await self.run(timeout)
+        self.output_cb = prev_cb
+        return "\n".join(result)
+
 
 class ShellCommandFactory:
-    def build_shell_command(self, cmd, callback):
+    def build_shell_command(self, cmd, callback=None):
         return ShellCommand(cmd, callback)
 
 def load_plugin(config):

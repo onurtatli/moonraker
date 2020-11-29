@@ -129,7 +129,7 @@ class MoonrakerApp:
         self.get_handler_delegate = self.app.get_handler_delegate
 
         # Register handlers
-        logfile = config['cmd_args'].get('logfile')
+        logfile = config['system_args'].get('logfile')
         self.register_static_file_handler("moonraker.log", logfile)
         self.auth.register_handlers(self)
 
@@ -150,6 +150,7 @@ class MoonrakerApp:
     async def close(self):
         if self.tornado_server is not None:
             self.tornado_server.stop()
+            await self.tornado_server.close_all_connections()
         await self.wsm.close()
         self.auth.close()
 
