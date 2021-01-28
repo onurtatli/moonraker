@@ -1,9 +1,14 @@
-This document describes Moonraker's full configuration.
+This document describes Moonraker's full configuration.  As this file
+references configuration for both Klipper (printer.cfg) and Moonraker
+(moonraker.conf), each example contains a commment indicating which
+configuration file is being refrenenced.
 
 # Primary Configuration
 The sections outlined here are required for Moonraker to function. A
 minimal functional configuration might look like the following:
 ```
+# moonraker.conf
+
 [server]
 host: 0.0.0.0
 port: 7125
@@ -19,6 +24,8 @@ trusted_clients:
 ## server
 
 ```
+# moonraker.conf
+
 [server]
 host: 0.0.0.0
 #  The host address in which to bind the HTTP server.  Default is to bind
@@ -34,15 +41,18 @@ enable_debug_logging: True
 #   When set to True Moonraker will log in verbose mode.  During this stage
 #   of development the default is True.  In the future this will change.
 config_path:
-#   An optional path where configuration files are located. If specified,
-#   Moonraker will serve this path allowing file and directory manipulation
-#   within it. This path must be located within the user's HOME directory,
-#   by may not be the home directory itself. The default is no path, which
-#   results in no configuration files being served.
+#   The path to a directory where configuration files are located. This
+#   directory may contain Klipper config files (printer.cfg) or Moonraker
+#   config files (moonraker.conf).  Clients may also write their own config
+#   files to this directory.  Note that this may not be the system root
+#   (ie: "/") and moonraker must have read and write access permissions
+#   for this directory.
 ```
 ## authorization
 
 ```
+# moonraker.conf
+
 [authorization]
 enabled: True
 #   Enables authorization.  When set to true, requests must either contain
@@ -75,9 +85,12 @@ functionality in moonraker.
 ## paneldue
 Enables PanelDue display support.  The PanelDue should be connected to the
 host machine, either via the machine's UART GPIOs or through a USB-TTL
-converter.
+converter.  Currently PanelDue Firmware Version 1.24 is supported.  Other
+releases may not behave correctly.
 
 ```
+# moonraker.conf
+
 [paneldue]
 serial:
 #   The serial port in which the PanelDue is connected.  This parameter
@@ -110,6 +123,8 @@ in the PanelDue's "macro" menu.
 
 Note that buzzing the piezo requires the following gcode_macro in `printer.cfg`:
 ```
+# printer.cfg
+
 [gcode_macro PANELDUE_BEEP]
 # Beep frequency
 default_parameter_FREQUENCY: 300
@@ -126,10 +141,27 @@ Enables device power control.  Currently GPIO (relays), TPLink Smartplug,
 and Tasmota (via http) devices are supported.
 
 ```
+# moonraker.conf
+
 [power device_name]
 type: gpio
 #   The type of device.  Can be either gpio, tplink_smartplug or tasmota.
 #   This parameter must be provided.
+off_when_shutdown: False
+#   If set to True the device will be powered off when Klipper enters
+#   the "shutdown" state.  This option applies to all device types.
+#   The default is False.
+locked_while_printing: False
+#   If True, locks the device so that the power cannot be changed while the
+#   printer is printing. This is useful to avert an accidental shutdown to
+#   the printer's power.  The default is False.
+restart_klipper_when_powered: False
+#   If set to True, Moonraker will issue a "FIRMWARE_RESTART" to Klipper
+#   after the device has been powered on.  The default is False, thus no
+#   attempt to made to restart Klipper after power on.
+restart_delay: 1.
+#   If "restart_klipper_when_powered" is set, this option specifies the amount
+#   of time (in seconds) to delay the restart.  Default is 1 second.
 pin: gpiochip0/gpio26
 #   The pin to use for GPIO devices.  The chip is optional, if left out
 #   then the module will default to gpiochip0.  If one wishes to invert
@@ -139,6 +171,10 @@ pin: gpiochip0/gpio26
 #      !gpiochip0/gpio26
 #      !gpio26
 #    This parameter must be provided for "gpio" type devices
+initial_state: off
+#    The initial state for GPIO type devices.  May be on or
+#    off.  When moonraker starts the device will be set to this
+#    state.  Default is off.
 address:
 port:
 #   The above options are used for "tplink_smartplug" devices.  The
@@ -160,13 +196,23 @@ output_id:
 ```
 Below are some potential examples:
 ```
+# moonraker.conf
+
 [power printer]
 type: gpio
 pin: gpio26
+off_when_shutdown: True
+initial_state: off
 
 [power printer_led]
 type: gpio
 pin: !gpiochip0/gpio16
+initial_state: off
+
+[power light_strip]
+type: gpio
+pin: gpiochip0/gpio17
+initial_state: on
 
 [power wifi_switch]
 type: tplink_smartplug
@@ -181,6 +227,8 @@ password: password1
 It is possible to toggle device power from the Klippy host, this can be done
 with a gcode_macro, such as:
 ```
+# printer.cfg
+
 [gcode_macro POWER_OFF_PRINTER]
 gcode:
   {action_call_remote_method("set_device_power",
@@ -191,6 +239,8 @@ The `POWER_OFF_PRINTER` gcode can be run to turn off the "printer" device.
 This could be used in conjunction with Klipper's idle timeout to turn the
 printer off when idle with a configuration similar to that of below:
 ```
+# printer.cfg
+
 [delayed_gcode delayed_printer_off]
 initial_duration: 0.
 gcode:
@@ -211,15 +261,76 @@ performed on pristine git repos.  Repos that have been modified on
 disk or cloned from unofficial sources are not supported.
 
 ```
+# moonraker.conf
+
 [update_manager]
-client_repo:
+enable_repo_debug: False
+#   When set to True moonraker will bypass repo validation and allow
+#   updates from unofficial remotes and/or branches.  Updates on
+#   detached repos are also allowed.  This option is intended for
+#   developers and should not be used on production machines.  The
+#   default is False.
+enable_auto_refresh: False
+#   When set to True Moonraker will attempt to fetch status about
+#   available updates roughly every 24 hours, between 12am-4am.
+#   When set to False Moonraker will only fetch update state on startup
+#   and clients will need to request that Moonraker updates state.  The
+#   default is False.
+distro: debian
+#   The disto in which moonraker has been installed.  Currently the
+#   update manager only supports "debian", which encompasses all of
+#   its derivatives.  The default is debain.
+```
+
+### Client Configuration
+This allows client programs such as Fluidd, KlipperScreen, and Mainsail to be
+updated in addition to klipper, moonraker, and the system os. Repos that have
+been modified or cloned from unofficial sources are not supported.
+
+There are two types of update manager clients and each will be detailed
+separately. The first one is targeted towards releases that do not need a
+service restart such as Fluidd/Mainsail.
+
+```
+# moonraker.conf
+
+[update_manager client client_name]
+type: web
+repo:
 #   This is the GitHub repo of the client, in the format of user/client.
 #   For example, this could be set to cadriel/fluidd to update Fluidd or
-#   meteyou/mainsail to update Mainsail.  If this option is not set then
-#   the update manager will not attempt to update a client.
-client_path:
-#   The path to the client's files on disk.  This cannot be a symbolic link,
-#   it must be the real directory in which the client's files are located.
-#   If `client_repo` is set, this parameter must be provided
+#   meteyou/mainsail to update Mainsail.  This parameter must be provided.
+path:
+#   The path to the client's files on disk.  This parameter must be provided.
+```
 
+This second example is for git repositories that have a service that need
+updating.
+
+```
+# moonraker.conf
+
+# service_name must be the name of the systemd service
+[update_manager client service_name]
+type: git_repo
+path:
+#   The path to the client's files on disk.  This parameter must be provided.
+origin:
+#   The full GitHub URL of the "origin" remote for the repository.  This can
+#   be be viewed by navigating to your repository and running:
+#     git remote -v
+#   This parameter must be provided.
+env:
+#   The path to the client's virtual environment executable on disk.  For
+#   example, Moonraker's venv is located at ~/moonraker-env/bin/python.
+#   The default is no env, which disables updating python packages.
+requirements:
+#  This is the location in the repository to the client's virtual environment
+#  requirements file. This location is relative to the root of the repository.
+#  This parameter must be provided if the "env" option is set, otherwise it
+#  should be omitted.
+install_script:
+#  The file location, relative to the repository, for the installation script.
+#  The update manager parses this file for "system" packages that need updating.
+#  The default is no install script, which disables system package updates
 ```

@@ -1,6 +1,26 @@
 This file will track changes that require user intervention,
 such as a configuration change or a reinstallation.
 
+### December 31st 2020
+- The file manager no longer restricts the `config_path` to a folder
+  within the HOME directory.  The path may not be the system root,
+  however it can reside anywhere else on the file system as long as
+  Moonraker has read and write access to the directory.  This applies
+  to gcode path received from Klipper via the `virtual_sdcard` section
+  as well.
+
+### December 6th 2020
+- Moonraker is now installed as a systemd service.  This allows logging
+  to stdout which can be viewed with the `journalctl -u moonraker` command.
+  This changes requires the user to rerun the install script.  If
+  `moonraker.conf` is not located in the home directory, the command
+  will looks something like the following:
+  ```
+  cd ~/moonraker
+  ./scripts/install-moonraker.sh -f -c /home/pi/klipper_config/moonraker.conf
+  ```
+  Otherwise you can run the install script with no arguments.
+
 ### November 19th 2020
 - The install script (`install-moonraker.sh`) now has command-line
   options:\

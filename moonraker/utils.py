@@ -6,6 +6,7 @@
 import logging
 import logging.handlers
 import os
+import sys
 import subprocess
 import asyncio
 from queue import SimpleQueue as Queue
@@ -27,19 +28,26 @@ class LocalQueueHandler(logging.handlers.QueueHandler):
         except Exception:
             self.handleError(record)
 
+# Timed Rotating File Handler, based on Klipper's implementation
 class MoonrakerLoggingHandler(logging.handlers.TimedRotatingFileHandler):
     def __init__(self, software_version, filename, **kwargs):
         super(MoonrakerLoggingHandler, self).__init__(filename, **kwargs)
-        self.header = "Moonraker Log Start...\n"
-        self.header += f"Git Version: {software_version}\n"
-        self.header += "="*80 + "\n"
+        self.rollover_info = {
+            'header': f"{'-'*20}Moonraker Log Start{'-'*20}",
+            'version': f"Git Version: {software_version}",
+        }
+        lines = [line for line in self.rollover_info.values() if line]
         if self.stream is not None:
-            self.stream.write(self.header)
+            self.stream.write("\n".join(lines) + "\n")
+
+    def set_rollover_info(self, name, item):
+        self.rollover_info[name] = item
 
     def doRollover(self):
         super(MoonrakerLoggingHandler, self).doRollover()
+        lines = [line for line in self.rollover_info.values() if line]
         if self.stream is not None:
-            self.stream.write(self.header)
+            self.stream.write("\n".join(lines) + "\n")
 
 # Parse the git version from the command line.  This code
 # is borrowed from Klipper.
@@ -73,11 +81,21 @@ def setup_logging(log_file, software_version):
     queue_handler = LocalQueueHandler(queue)
     root_logger.addHandler(queue_handler)
     root_logger.setLevel(logging.INFO)
-    file_hdlr = MoonrakerLoggingHandler(
-        software_version, log_file, when='midnight', backupCount=2)
-    formatter = logging.Formatter(
-        '%(asctime)s [%(filename)s:%(funcName)s()] - %(message)s')
-    file_hdlr.setFormatter(formatter)
-    listener = logging.handlers.QueueListener(queue, file_hdlr)
+    stdout_hdlr = logging.StreamHandler(sys.stdout)
+    stdout_fmt = logging.Formatter(
+        '[%(filename)s:%(funcName)s()] - %(message)s')
+    stdout_hdlr.setFormatter(stdout_fmt)
+    file_hdlr = None
+    if log_file:
+        file_hdlr = MoonrakerLoggingHandler(
+            software_version, log_file, when='midnight', backupCount=2)
+        formatter = logging.Formatter(
+            '%(asctime)s [%(filename)s:%(funcName)s()] - %(message)s')
+        file_hdlr.setFormatter(formatter)
+        listener = logging.handlers.QueueListener(
+            queue, file_hdlr, stdout_hdlr)
+    else:
+        listener = logging.handlers.QueueListener(
+            queue, stdout_hdlr)
     listener.start()
-    return listener
+    return listener, file_hdlr

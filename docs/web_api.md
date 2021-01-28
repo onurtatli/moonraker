@@ -819,12 +819,13 @@ been configured:
 
 ### Get update status
 Retreives the current state of each "package" available for update.  Typically
-this will consist of information regarding `moonraker`, `klipper`, and
-a `client`.  If moonraker has not yet received information from Klipper then
-its status will be omitted.  If a client has not been configured then its
-status will also be omitted.  If the parameter "refresh" is passed and set
-to true then Moonraker will query Github for the most recent release
-information.
+this will consist of information regarding `moonraker`, `klipper`, a `client`,
+and `system` packages.  If moonraker has not yet received information from
+Klipper then its status will be omitted.  If a client has not been configured
+then its status will also be omitted.  One may request that the update info
+be refreshed by sending a `refresh=true` argument.  Note that the refresh
+parameter is ignored if an update is in progress or if a print is in progress.
+In these cases the current status will be returned immediately.
 
 - HTTP command:\
   `GET /machine/update/status?refresh=false`
@@ -844,41 +845,81 @@ information.
   {
       'version_info': {
           'moonraker': {
+              branch: <string>,
+              remote_alias: <string>,
               version: <string>,
+              remote_version: <string>,
               current_hash: <string>,
               remote_hash: <string>,
               is_valid: <bool>,
-              is_dirty: <bool>
+              is_dirty: <bool>,
+              detached: <bool>,
+              debug_enabled: <bool>
           },
           'klipper': {
+              branch: <string>,
+              remote_alias: <string>,
               version: <string>,
+              remote_version: <string>,
               current_hash: <string>,
               remote_hash: <string>,
               is_valid: <bool>,
-              is_dirty: <bool>
-          }
-          'client': {
+              is_dirty: <bool>,
+              detached: <bool>,
+              debug_enabled: <bool>
+          },
+          'client_name_1': {
               name: <string>,
               version: <string>,
               remote_version: <string>
+          },
+          'system': {
+              package_count: <int>,
+              package_list: <array>
           }
       },
-      busy: false
+      busy: false,
+      github_rate_limit: <int>,
+      github_requests_remaining: <int>
+      github_limit_reset_time: <int>,
   }
   ```
   - The `busy` field is set to true if an update is in progress.  Moonraker
     will not allow concurrent updates.
+  - The `github_rate_limit` is the maximum number of github API requests
+    the user currently has.  An unathenticated user typically has 60
+    requests per hour.
+  - The `github_requests_remaining` is the number of API request the user
+    currently has remaining.
+  - The `github_limit_reset_time` is reported as seconds since the epoch.
+    When this time is reached the user's limit will be reset.
   - The `moonraker` and `klipper` objects have the following fields:
+    - `branch`: the name of the current git branch.  This should typically
+      be "master".
+    - `remote_alias`: the alias for the remote.  This should typically be
+      "origin".
     - `version`:  version of the current repo on disk
+    - `remote_version`: version of the latest available update
     - `current_hash`: hash of the most recent commit on disk
     - `remote_hash`: hash of the most recent commit pushed to the remote
     - `is_valid`: True if installation is a valid git repo on the master branch
       and an "origin" set to the official remote
     - `is_dirty`: True if the repo has been modified
-  - The `client` object has the following fields:
-   `name`: Name of the configured client
-   `version`:  version of the installed client.
-   `remote_version`:  version of the latest release published to GitHub
+    - `detached`: True if the repo is currently in a detached state
+    - `debug_enabled`: True when "enable_repo_debug" has been configured.  This
+      will bypass repo validation, allowing detached updates, and updates from
+      a remote/origin other than "origin/master".
+  - Multiple `client` fields may be present.  Web clients have the following
+    fields:
+    - `name`: Name of the configured client
+    - `version`:  version of the installed client.
+    - `remote_version`:  version of the latest release published to GitHub
+    A `git_repo` client will have fields that match that of `klipper` and
+    `moonraker`
+  - The `system` object has the following fields:
+    - `package_count`: The number of system packages available for update
+    - `package_list`: An array containing the names of packages available
+      for update
 
 ### Update Moonraker
 Pulls the most recent version of Moonraker from GitHub and restarts
@@ -886,7 +927,8 @@ the service.  If "include_deps" is set to `true` an attempt will be made
 to install new packages (via apt-get) and python dependencies (via pip).
 Note that Moonraker uses semantic versioning to check for dependency changes
 automatically, so it is generally not necessary to set `include_deps`
-to `true`.
+to `true`.  If an update is requested while a print is in progress then
+this request will return an error.
 
 - HTTP command:\
   `POST /machine/update/moonraker?include_deps=false`
@@ -909,7 +951,8 @@ the service.  If "include_deps" is set to `true` an attempt will be made
 to install new packages (via apt-get) and python dependencies (via pip).
 At the moment there is no method for automatically checking for updated
 Klipper dependencies, so clients might wish to make this option available
-to users via the UI.
+to users via the UI. If an update is requested while a print is in progress
+then this request will return an error.
 
 - HTTP command:\
   `POST /machine/update/klipper?include_deps=false`
@@ -927,22 +970,27 @@ to users via the UI.
   `ok` when complete
 
 ### Update Client
-If `client_repo` and `client_path` have been configured in `[update_manager]`
-this endpoint can be used to install the most recently publish release
-of the client.
+If one more more `[update_manager client client_name]` sections have
+been configured this endpoint can be used to install the most recently
+published release of the client.  If an update is requested while a
+print is in progress then this request will return an error.  The
+`name` argument is requred, it's value should match the `client_name`
+of the configured section.
 
 - HTTP command:\
-  `POST /machine/update/client`
+  `POST /machine/update/client?name=client_name`
 
 - Websocket command:\
   `{jsonrpc: "2.0", method: "machine.update.client",
-   id: <request id>}`
+   params: {name: "client_name"}, id: <request id>}`
 
 - Returns:\
   `ok` when complete
 
 ### Update System Packages
 Upgrades the system packages.  Currently only `apt-get` is supported.
+If an update is requested while a print is in progress then this request
+will return an error.
 
 - HTTP command:\
   `POST /machine/update/system`
@@ -1067,6 +1115,11 @@ Notify clients when Klippy has reported a ready state
 
 `{jsonrpc: "2.0", method: "notify_klippy_ready"}`
 
+### Klippy Shutdown:
+Notify clients when Klippy has reported a shutdown state
+
+`{jsonrpc: "2.0", method: "notify_klippy_shutdown"}`
+
 ### Klippy Disconnected:
 Notify clients when Moonraker's connection to Klippy has terminated
 
@@ -1159,7 +1212,8 @@ Where `response` is an object int he following format:
 {
     application: <string>,
     proc_id: <int>,
-    message: <string>
+    message: <string>,
+    complete: <boolean>
 }
 ```
 - The `application` field contains the name of application currently being
@@ -1169,6 +1223,19 @@ Where `response` is an object int he following format:
   process.  This id is generated for each update request.
 - The `message` field contains an asyncronous message sent during the update
   process.
+- The `complete` field is set to true on the final message sent during an
+  update, indicating that the update completed successfully.  Otherwise it
+  will be false.
+
+### Update Manager Refreshed
+The update manager periodically auto refreshes the state of each application
+it is tracking.  After an auto refresh has completed the following
+notification is broadcast:
+
+`{jsonrpc: "2.0", method: "notify_update_refreshed", params: [update_info]}`
+
+Where `update_info` is an object that matches the response from an
+[update status](#get-update-status) request.
 
 # Appendix
 

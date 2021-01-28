@@ -173,6 +173,8 @@ class WebsocketManager:
         self.server.register_event_handler(
             "server:klippy_ready", self._handle_klippy_ready)
         self.server.register_event_handler(
+            "server:klippy_shutdown", self._handle_klippy_shutdown)
+        self.server.register_event_handler(
             "server:klippy_disconnect", self._handle_klippy_disconnect)
         self.server.register_event_handler(
             "server:gcode_response", self._handle_gcode_response)
@@ -184,9 +186,14 @@ class WebsocketManager:
             "gpio_power:power_changed", self._handle_power_changed)
         self.server.register_event_handler(
             "update_manager:update_response", self._handle_update_response)
+        self.server.register_event_handler(
+            "update_manager:update_refreshed", self._handle_update_refreshed)
 
     async def _handle_klippy_ready(self):
         await self.notify_websockets("klippy_ready")
+
+    async def _handle_klippy_shutdown(self):
+        await self.notify_websockets("klippy_shutdown")
 
     async def _handle_klippy_disconnect(self):
         await self.notify_websockets("klippy_disconnected")
@@ -205,6 +212,9 @@ class WebsocketManager:
 
     async def _handle_update_response(self, response):
         await self.notify_websockets("update_response", response)
+
+    async def _handle_update_refreshed(self, refresh_info):
+        await self.notify_websockets("update_refreshed", refresh_info)
 
     def register_local_handler(self, api_def, callback):
         for ws_method, req_method in \
@@ -309,8 +319,8 @@ class WebSocket(WebSocketHandler):
                 'method': "notify_status_update",
                 'params': [status]})
         except WebSocketClosedError:
-            self.websockets.pop(self.uid, None)
-            logging.info(f"Websocket Removed: {self.uid}")
+            logging.info(
+                f"Websocket Closed During Status Update: {self.uid}")
         except Exception:
             logging.exception(
                 f"Error sending data over websocket: {self.uid}")

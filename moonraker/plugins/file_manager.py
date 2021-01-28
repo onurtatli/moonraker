@@ -15,7 +15,7 @@ from tornado.locks import Event
 
 VALID_GCODE_EXTS = ['.gcode', '.g', '.gco']
 FULL_ACCESS_ROOTS = ["gcodes", "config"]
-METADATA_SCRIPT = os.path.normpath(os.path.join(
+METADATA_SCRIPT = os.path.abspath(os.path.join(
     os.path.dirname(__file__), "../../scripts/extract_metadata.py"))
 
 class FileManager:
@@ -45,7 +45,7 @@ class FileManager:
         self.server.register_upload_handler("/api/files/local")
 
         self.server.register_event_handler(
-            "server:klippy_ready", self._update_fixed_paths)
+            "server:klippy_identified", self._update_fixed_paths)
 
         # Register Klippy Configuration Path
         config_path = config.get('config_path', None)
@@ -77,20 +77,29 @@ class FileManager:
 
         # Register log path
         log_file = paths.get('log_file')
-        log_path = os.path.normpath(os.path.expanduser(log_file))
-        self.server.register_static_file_handler("klippy.log", log_path)
+        if log_file is not None:
+            log_path = os.path.abspath(os.path.expanduser(log_file))
+            self.server.register_static_file_handler(
+                "klippy.log", log_path, force=True)
 
     def register_directory(self, root, path):
         if path is None:
             return False
-        home = os.path.expanduser('~')
-        path = os.path.normpath(os.path.expanduser(path))
-        if not os.path.isdir(path) or not path.startswith(home) or \
-                path == home:
+        path = os.path.abspath(os.path.expanduser(path))
+        if os.path.islink(path):
+            path = os.path.realpath(path)
+        if not os.path.isdir(path) or path == "/":
             logging.info(
-                f"\nSupplied path ({path}) for ({root}) not valid. Please\n"
-                "check that the path exists and is a subfolder in the HOME\n"
-                "directory. Note that the path may not BE the home directory.")
+                f"\nSupplied path ({path}) for ({root}) a valid. Make sure\n"
+                "that the path exists and is not the file system root.")
+            return False
+        permissions = os.R_OK
+        if root in FULL_ACCESS_ROOTS:
+            permissions |= os.W_OK
+        if not os.access(path, permissions):
+            logging.info(
+                f"\nMoonraker does not have permission to access path "
+                f"({path}) for ({root}).")
             return False
         if path != self.file_paths.get(root, ""):
             self.file_paths[root] = path
@@ -107,6 +116,9 @@ class FileManager:
 
     def get_sd_directory(self):
         return self.file_paths.get('gcodes', "")
+
+    def get_registered_dirs(self):
+        return list(self.file_paths.keys())
 
     def get_fixed_path_args(self):
         return dict(self.fixed_path_args)
@@ -131,18 +143,7 @@ class FileManager:
         if action == 'GET':
             is_extended = web_request.get_boolean('extended', False)
             # Get list of files and subdirectories for this target
-            dir_info = self._list_directory(dir_path)
-            # Check to see if a filelist update is necessary
-            for f in dir_info['files']:
-                fname = os.path.join(rel_path, f['filename'])
-                ext = os.path.splitext(f['filename'])[-1].lower()
-                if root != 'gcodes' or ext not in VALID_GCODE_EXTS:
-                    continue
-                self.gcode_metadata.parse_metadata(
-                    fname, f['size'], f['modified'], notify=True)
-                metadata = self.gcode_metadata.get(fname, None)
-                if metadata is not None and is_extended:
-                    f.update(metadata)
+            dir_info = self._list_directory(dir_path, is_extended)
             return dir_info
         elif action == 'POST' and root in FULL_ACCESS_ROOTS:
             # Create a new directory
@@ -264,20 +265,36 @@ class FileManager:
             {'path': src_rel_path, 'root': source_root})
         return "ok"
 
-    def _list_directory(self, path):
+    def _list_directory(self, path, is_extended=False):
         if not os.path.isdir(path):
             raise self.server.error(
                 f"Directory does not exist ({path})")
         flist = {'dirs': [], 'files': []}
         for fname in os.listdir(path):
             full_path = os.path.join(path, fname)
+            if not os.path.exists(full_path):
+                continue
             path_info = self._get_path_info(full_path)
             if os.path.isdir(full_path):
                 path_info['dirname'] = fname
                 flist['dirs'].append(path_info)
             elif os.path.isfile(full_path):
                 path_info['filename'] = fname
+                # Check to see if a filelist update is necessary
+                ext = os.path.splitext(fname)[-1].lower()
+                gc_path = self.file_paths.get('gcodes', None)
+                if gc_path is not None and full_path.startswith(gc_path) and \
+                        ext in VALID_GCODE_EXTS:
+                    rel_path = os.path.relpath(full_path, start=gc_path)
+                    self.gcode_metadata.parse_metadata(
+                        rel_path, path_info['size'], path_info['modified'],
+                        notify=True)
+                    metadata = self.gcode_metadata.get(rel_path, None)
+                    if metadata is not None and is_extended:
+                        path_info.update(metadata)
                 flist['files'].append(path_info)
+        usage = shutil.disk_usage(path)
+        flist['disk_usage'] = usage._asdict()
         return flist
 
     def _get_path_info(self, path):
@@ -373,11 +390,10 @@ class FileManager:
             full_path = root_path
             dir_path = ""
         else:
-            parts = os.path.split(upload['filename'].strip().lstrip("/"))
-            filename = os.path.join(parts[0], "_".join(parts[1].split()))
+            filename = upload['filename'].strip().lstrip("/")
             if dir_path:
                 filename = os.path.join(dir_path, filename)
-            full_path = os.path.normpath(os.path.join(root_path, filename))
+            full_path = os.path.abspath(os.path.join(root_path, filename))
         # Validate the path.  Don't allow uploads to a parent of the root
         if not full_path.startswith(root_path):
             raise self.server.error(
@@ -448,12 +464,24 @@ class FileManager:
             logging.info(msg)
             raise self.server.error(msg)
         logging.info(f"Updating File List <{root}>...")
-        for root_path, dirs, files in os.walk(path, followlinks=True):
+        st = os.stat(path)
+        visited_dirs = {(st.st_dev, st.st_ino)}
+        for dir_path, dir_names, files in os.walk(path, followlinks=True):
+            scan_dirs = []
+            # Filter out directories that have already been visted. This
+            # prevents infinite recrusion "followlinks" is set to True
+            for dname in dir_names:
+                st = os.stat(os.path.join(dir_path, dname))
+                key = (st.st_dev, st.st_ino)
+                if key not in visited_dirs:
+                    visited_dirs.add(key)
+                    scan_dirs.append(dname)
+            dir_names[:] = scan_dirs
             for name in files:
                 ext = os.path.splitext(name)[-1].lower()
                 if root == 'gcodes' and ext not in VALID_GCODE_EXTS:
                     continue
-                full_path = os.path.join(root_path, name)
+                full_path = os.path.join(dir_path, name)
                 fname = full_path[len(path) + 1:]
                 finfo = self._get_path_info(full_path)
                 filelist[fname] = finfo
@@ -478,12 +506,10 @@ class FileManager:
         if filename.startswith('gcodes/'):
             filename = filename[7:]
 
-        flist = self.get_file_list("gcodes")
-        return self.gcode_metadata.get(filename, flist.get(filename, {}))
+        return self.gcode_metadata.get(filename, {})
 
     def list_dir(self, directory, simple_format=False):
-        # List a directory relative to its root.  Currently the only
-        # Supported root is "gcodes"
+        # List a directory relative to its root.
         if directory[0] == "/":
             directory = directory[1:]
         parts = directory.split("/", 1)
@@ -653,13 +679,16 @@ class MetadataStorage:
         self.busy = False
 
     async def _run_extract_metadata(self, filename, notify):
+        # Escape single quotes in the file name so that it may be
+        # properly loaded
+        filename = filename.replace("\"", "\\\"")
         cmd = " ".join([sys.executable, METADATA_SCRIPT, "-p",
-                        self.gc_path, "-f", "'" + filename + "'"])
+                        self.gc_path, "-f", f"\"{filename}\""])
         shell_command = self.server.lookup_plugin('shell_command')
         scmd = shell_command.build_shell_command(
             cmd, self._handle_script_response)
         self.script_response = None
-        await scmd.run(timeout=4.)
+        await scmd.run(timeout=10.)
         if self.script_response is None:
             raise self.server.error("Unable to extract metadata")
         path = self.script_response['file']
